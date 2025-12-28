@@ -106,3 +106,5 @@ Prompt example:
 
 [00:06-00:08] Wide, high-angle crane shot, revealing the lone explorer standing small in the center of the vast, forgotten temple complex, half-swallowed by the jungle. SFX: A swelling, gentle orchestral score begins to play.
 
+## Notes
+- DO NOT montages because current AI video models generate continuous motion (frame by frame). They struggle with the concept of cinematic cuts or montages within a single prompt.

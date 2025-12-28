@@ -58,7 +58,7 @@ Options:
 
 ### Step 3: Create Video Prompt Based on Type
 
-Based on the video type selected, use the appropriate structure and veo-prompt-crafter agent to create prompt. Save the crafted prompts to src/assets/scripts folder.
+Based on the video type selected, use the appropriate structure and veo-prompt-crafter agent to create prompt json file.
 
 #### For Explainer Videos
 See references/explainer-video.md for components
@@ -80,5 +80,4 @@ See references/educational.md for components
 
 ### Step 4: Create Storyboard
 
-Use the script scripts/generate-storyboard.ts to create a storyboard grid image and save it to src/assets/storyboard
-``` bun run generate-storyboard.ts --scenes-description "Your scenes description" --image-folder src/assets/reference-images --output storyboard.png```
+Run ```bun run .claude/skills/ad-video-creator/scripts/generate-storyboard.ts --scenes-description-file "scenes description file path" --image-directory src/assets/reference-images --output-directory src/assets/storyboard```

@@ -6,53 +6,145 @@
  * Generates storyboards using Fal AI's Nano Banana Pro Edit model.
  *
  * Usage:
- *   bun run generate-storyboard.ts --scenes-description "Your scenes description" --image-folder "images folder path" --output storyboard.png
+ *   bun run generate-storyboard.ts --scenes-description-file "scenes description file path" --image-directory "images directory path" --output-directory "output directory path"
  */
 
 import { readdir } from "node:fs/promises";
 import { type CompletedQueueStatus, fal } from "@fal-ai/client";
 import { program } from "commander";
-import storyboardPrompt from "./storyboard-prompt.md";
+import pMap from "p-map";
+import { z } from "zod";
 
 interface StoryboardOptions {
-	scenesDescription: string;
-	imageFolder: string;
-	outputPath: string;
+	scenesDescriptionFile: string;
+	imageDirectory: string;
+	outputDirectory: string;
 }
 
-async function generateStoryboard(options: StoryboardOptions): Promise<void> {
-	const { scenesDescription, imageFolder, outputPath } = options;
+const scenesDescriptionJsonSchema = z.object({
+	scenes: z.array(
+		z.object({
+			scene_title: z.string(),
+			duration: z.enum(["4s", "6s", "8s"]),
+			first_frame_prompt: z.string(),
+			last_frame_prompt: z.string(),
+			video_transition_prompt: z.string(),
+		}),
+	),
+});
 
-	const prompt = storyboardPrompt.replace(
-		"{{ SCENES_DESCRIPTION }}",
-		scenesDescription,
-	);
+async function generateStoryboard(options: StoryboardOptions): Promise<void> {
+	const { scenesDescriptionFile, imageDirectory, outputDirectory } = options;
+
+	const scenesDescriptionJson = await Bun.file(scenesDescriptionFile).text();
+	const scenesDescription = scenesDescriptionJsonSchema.safeParse(
+		JSON.parse(scenesDescriptionJson),
+	).data;
+	if (!scenesDescription) {
+		throw new Error("Invalid scenes description file");
+	}
 
 	fal.config({
 		credentials: process.env.FAL_KEY,
 	});
 
-	const model = "fal-ai/nano-banana-pro/edit";
-	const urls = await uploadFiles(imageFolder);
+	const imageModel = "fal-ai/nano-banana-pro/edit";
+	const videoModel = "fal-ai/veo3.1/fast/first-last-frame-to-video";
+	const referenceImageUrls = await uploadFiles(imageDirectory);
 
-	const { request_id } = await fal.queue.submit(model, {
-		input: {
-			prompt: prompt,
-			image_urls: urls,
-		},
+	const mapper = async (scene: (typeof scenesDescription.scenes)[number]) => {
+		const firstFrameQueueStatus = await fal.queue.submit(imageModel, {
+			input: {
+				prompt: scene.first_frame_prompt,
+				image_urls: referenceImageUrls,
+			},
+		});
+		const lastFrameQueueStatus = await fal.queue.submit(imageModel, {
+			input: {
+				prompt: scene.last_frame_prompt,
+				image_urls: referenceImageUrls,
+			},
+		});
+		await waitUntilCompleted(
+			[firstFrameQueueStatus.request_id, lastFrameQueueStatus.request_id],
+			imageModel,
+		);
+
+		const firstFrameOutput = await fal.queue.result(imageModel, {
+			requestId: firstFrameQueueStatus.request_id,
+		});
+		const lastFrameOutput = await fal.queue.result(imageModel, {
+			requestId: lastFrameQueueStatus.request_id,
+		});
+
+		const videoQueueStatus = await fal.queue.submit(videoModel, {
+			input: {
+				prompt: scene.video_transition_prompt,
+				first_frame_url: firstFrameOutput.data.images[0].url,
+				last_frame_url: lastFrameOutput.data.images[0].url,
+				generate_audio: false,
+				duration: scene.duration,
+			},
+		});
+		await waitUntilCompleted([videoQueueStatus.request_id], videoModel);
+
+		const videoOutput = await fal.queue.result(videoModel, {
+			requestId: videoQueueStatus.request_id,
+		});
+
+		return {
+			sceneTitle: scene.scene_title,
+			firstFrameUrl: firstFrameOutput.data.images[0].url,
+			lastFrameUrl: lastFrameOutput.data.images[0].url,
+			videoUrl: videoOutput.data.video.url,
+		};
+	};
+
+	const results = await pMap(scenesDescription.scenes, mapper, {
+		concurrency: 10,
 	});
 
-	await waitUntilCompleted(request_id, model);
+	const storyboard = await Promise.all(
+		results.map(async (result) => {
+			const firstFrameUrl = result.firstFrameUrl;
+			const lastFrameUrl = result.lastFrameUrl;
+			const videoUrl = result.videoUrl;
+			const firstFrame = await fetch(firstFrameUrl);
+			const firstFrameBuffer = await firstFrame.arrayBuffer();
+			await Bun.write(
+				`${outputDirectory}/${result.sceneTitle}/first-frame.png`,
+				firstFrameBuffer,
+			);
+			const lastFrame = await fetch(lastFrameUrl);
+			const lastFrameBuffer = await lastFrame.arrayBuffer();
+			await Bun.write(
+				`${outputDirectory}/${result.sceneTitle}/last-frame.png`,
+				lastFrameBuffer,
+			);
+			const video = await fetch(videoUrl);
+			const videoBuffer = await video.arrayBuffer();
+			await Bun.write(
+				`${outputDirectory}/${result.sceneTitle}/video.mp4`,
+				videoBuffer,
+			);
 
-	const result = await fal.queue.result(model, {
-		requestId: request_id,
-	});
-	const imageUrl = result.data.images[0].url;
-	const image = await fetch(imageUrl);
-	const imageBuffer = await image.arrayBuffer();
-	await Bun.write(outputPath, imageBuffer);
+			return {
+				sceneTitle: result.sceneTitle,
+				firstFramePath: `${outputDirectory}/${result.sceneTitle}/first-frame.png`,
+				lastFramePath: `${outputDirectory}/${result.sceneTitle}/last-frame.png`,
+				videoPath: `${outputDirectory}/${result.sceneTitle}/video.mp4`,
+			};
+		}),
+	);
 
-	console.log(`✅ Storyboard generated and saved to: ${outputPath}`);
+	await Bun.write(
+		`${outputDirectory}/storyboard.json`,
+		JSON.stringify(storyboard, null, 2),
+	);
+
+	console.log(
+		`✅ Storyboard generated and saved to: ${outputDirectory}/storyboard.json`,
+	);
 }
 
 async function uploadFiles(folderPath: string): Promise<string[]> {
@@ -68,45 +160,56 @@ async function uploadFiles(folderPath: string): Promise<string[]> {
 }
 
 async function waitUntilCompleted(
-	requestId: string,
+	requestIds: string[],
 	model: string,
-): Promise<CompletedQueueStatus> {
-	let status = await fal.queue.status(model, {
-		requestId: requestId,
-		logs: true,
-	});
-	while (status.status !== "COMPLETED") {
+): Promise<CompletedQueueStatus[]> {
+	let statuses = await Promise.all(
+		requestIds.map(async (requestId) => {
+			return await fal.queue.status(model, {
+				requestId: requestId,
+				logs: true,
+			});
+		}),
+	);
+	while (!statuses.every((status) => status.status === "COMPLETED")) {
 		await Bun.sleep(1000);
-		status = await fal.queue.status(model, {
-			requestId: requestId,
-		});
+		statuses = await Promise.all(
+			requestIds.map(async (requestId) => {
+				return await fal.queue.status(model, {
+					requestId: requestId,
+					logs: true,
+				});
+			}),
+		);
 	}
-	return status;
+	return statuses;
 }
 
 program
-	.command("generate-storyboard")
 	.description("Generate a storyboard for a video")
 	.requiredOption(
-		"-d, --scenes-description <scenes-description>",
-		"The scenes description to generate the storyboard",
+		"-d, --scenes-description-file <scenes-description-file>",
+		"The scenes description file to generate the storyboard",
 	)
 	.requiredOption(
-		"-i, --image-folder <image-folder>",
-		"The reference image folder to generate the storyboard",
+		"-i, --image-directory <image-directory>",
+		"The reference images directory to generate the storyboard",
 	)
-	.requiredOption("-o, --output <output>", "The output file")
+	.requiredOption(
+		"-o, --output-directory <output-directory>",
+		"The output directory to save the storyboard images",
+	)
 	.action(
 		async (options: {
-			scenesDescription: string;
-			imageFolder: string;
-			output: string;
+			scenesDescriptionFile: string;
+			imageDirectory: string;
+			outputDirectory: string;
 		}) => {
 			try {
 				await generateStoryboard({
-					scenesDescription: options.scenesDescription,
-					imageFolder: options.imageFolder,
-					outputPath: options.output,
+					scenesDescriptionFile: options.scenesDescriptionFile,
+					imageDirectory: options.imageDirectory,
+					outputDirectory: options.outputDirectory,
 				});
 			} catch (error) {
 				console.error("❌ Error generating storyboard:", error);
