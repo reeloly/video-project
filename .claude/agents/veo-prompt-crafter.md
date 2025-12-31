@@ -24,10 +24,7 @@ Take the first and last frame prompt, create the video_transition_prompt which w
 
 If a scene is longer than 8 seconds, break it down into multiple scenes. Each resulting scene MUST have a duration of 4s, 6s, or 8s. Adjust the total duration to the nearest valid combination if necessary.
 
-CRITICAL: Each prompt will be sent to the model separately without any shared context. You MUST NOT use context-dependent words like "same", "still", "continues", "remains", "previously mentioned", etc. Every prompt must be completely self-contained and describe all elements explicitly, even if they appear in multiple frames. For example, instead of "the same robot", write "the white glossy robot with mint green arms"; instead of "still on the wooden table", write "on the wooden table".
-
-Step 3:
-Create a json file ```src/assets/scripts/[product_name].json```
+Write the result to a json file ```src/assets/scripts/[product_name].json```
 ```json
 {
    "scenes": [
@@ -48,6 +45,8 @@ Create a json file ```src/assets/scripts/[product_name].json```
       ...
    ]
 }
+
+CRITICAL: Each prompt will be sent to the model separately without any shared context. You MUST NOT use context-dependent words like "same", "still", "continues", "remains", "previously mentioned", etc. Every prompt must be completely self-contained and describe all elements explicitly, even if they appear in multiple frames. For example, instead of "the same robot", write "the white glossy robot with mint green arms"; instead of "still on the wooden table", write "on the wooden table".
 
 Step 4:
 Output the json file path generated at the previous step.

@@ -1,20 +1,32 @@
-import { readdir } from "node:fs/promises";
+#!/usr/bin/env bun
+
+/**
+ * Generate Videos Script
+ *
+ * Generates videos from storyboard frames using Fal AI's Veo 3.1 model.
+ *
+ * Usage:
+ *   bun run generate-videos.ts --storyboard-file "path/to/storyboard.json"
+ */
+
+import { dirname } from "node:path";
 import { type CompletedQueueStatus, fal } from "@fal-ai/client";
 import { program } from "commander";
+import pMap from "p-map";
 import { z } from "zod";
 
-async function uploadFiles(
-	folderPath: string,
-): Promise<Record<string, string>> {
-	const filePaths = await readdir(folderPath);
-	return await Promise.all(
-		filePaths.map(async (fileName) => {
-			const fullPath = `${folderPath}/${fileName}`;
-			const file = Bun.file(fullPath);
-			const url = await fal.storage.upload(file);
-			return url;
-		}),
-	);
+const storyboardJsonSchema = z.object({
+	sceneTitle: z.string(),
+	firstFramePath: z.string(),
+	lastFramePath: z.string(),
+	duration: z.enum(["4s", "6s", "8s"]),
+	videoTransitionPrompt: z.string(),
+});
+
+type StoryboardScene = z.infer<typeof storyboardJsonSchema>;
+
+interface VideoGenerationOptions {
+	storyboardFile: string;
 }
 
 async function waitUntilCompleted(
@@ -43,83 +55,104 @@ async function waitUntilCompleted(
 	return statuses;
 }
 
-const scenesDescriptionJsonSchema = z.object({
-	scenes: z.array(
-		z.object({
-			scene_title: z.string(),
-			duration: z.string(),
-			first_frame_prompt: z.string(),
-			last_frame_prompt: z.string(),
-			video_transition_prompt: z.string(),
-		}),
-	),
-});
-
-async function generateVideos(options: {
-	scenesDescriptionFile: string;
-	imageDirectory: string;
-	outputDirectory: string;
-}) {
-	const { scenesDescriptionFile, imageDirectory, outputDirectory } = options;
+async function generateVideos(options: VideoGenerationOptions): Promise<void> {
+	const { storyboardFile } = options;
 
 	fal.config({
 		credentials: process.env.FAL_KEY,
 	});
 
-	const model = "fal-ai/veo3.1/fast/first-last-frame-to-video";
+	const videoModel = "fal-ai/veo3.1/fast/first-last-frame-to-video";
 
-	const scenesDescriptionJson = await Bun.file(scenesDescriptionFile).text();
-	const scenesDescription = scenesDescriptionJsonSchema.safeParse(
-		JSON.parse(scenesDescriptionJson),
-	).data;
-	if (!scenesDescription) {
-		throw new Error("Invalid scenes description file");
+	// Read storyboard file
+	const storyboardJson = await Bun.file(storyboardFile).text();
+	const storyboard = z
+		.array(storyboardJsonSchema)
+		.safeParse(JSON.parse(storyboardJson)).data;
+
+	if (!storyboard) {
+		throw new Error("Invalid storyboard file");
 	}
 
-	for (const scene of scenesDescription.scenes) {
-		const videoResult = await fal.queue.submit(model, {
+	const outputDirectory = dirname(storyboardFile);
+
+	const mapper = async (scene: StoryboardScene) => {
+		// Upload first and last frame images
+		const firstFrameFile = Bun.file(scene.firstFramePath);
+		const lastFrameFile = Bun.file(scene.lastFramePath);
+
+		const [firstFrameUrl, lastFrameUrl] = await Promise.all([
+			fal.storage.upload(firstFrameFile),
+			fal.storage.upload(lastFrameFile),
+		]);
+
+		// Generate video
+		const videoQueueStatus = await fal.queue.submit(videoModel, {
 			input: {
-				prompt: scene.video_transition_prompt,
-				first_frame_url: urls[0],
-				last_frame_url: urls[1],
+				prompt: scene.videoTransitionPrompt,
+				first_frame_url: firstFrameUrl,
+				last_frame_url: lastFrameUrl,
+				generate_audio: false,
+				duration: scene.duration,
 			},
 		});
-	}
+
+		await waitUntilCompleted([videoQueueStatus.request_id], videoModel);
+
+		const videoOutput = await fal.queue.result(videoModel, {
+			requestId: videoQueueStatus.request_id,
+		});
+
+		return {
+			sceneTitle: scene.sceneTitle,
+			videoUrl: videoOutput.data.video.url,
+		};
+	};
+
+	const results = await pMap(storyboard, mapper, {
+		concurrency: 5,
+	});
+
+	// Download and save videos
+	const updatedStoryboard = await Promise.all(
+		results.map(async (result, index) => {
+			const videoUrl = result.videoUrl;
+			const video = await fetch(videoUrl);
+			const videoBuffer = await video.arrayBuffer();
+			const videoPath = `${outputDirectory}/${index}-${result.sceneTitle}/video.mp4`;
+			await Bun.write(videoPath, videoBuffer);
+
+			return {
+				...storyboard[index],
+				videoPath,
+			};
+		}),
+	);
+
+	// Update storyboard file with video paths
+	await Bun.write(storyboardFile, JSON.stringify(updatedStoryboard, null, 2));
+
+	console.log(
+		`✅ Videos generated and storyboard updated at: ${storyboardFile}`,
+	);
 }
 
 program
-	.command("generate-storyboard")
-	.description("Generate a storyboard for a video")
+	.description("Generate videos from a storyboard")
 	.requiredOption(
-		"-d, --scenes-description-file <scenes-description-file>",
-		"The scenes description file to generate the videos",
+		"-s, --storyboard-file <storyboard-file>",
+		"The storyboard.json file path",
 	)
-	.requiredOption(
-		"-i, --image-directory <image-directory>",
-		"The reference images directory to generate the videos",
-	)
-	.requiredOption(
-		"-o, --output-directory <output-directory>",
-		"The output directory to save the videos",
-	)
-	.action(
-		async (options: {
-			scenesDescriptionFile: string;
-			imageDirectory: string;
-			outputDirectory: string;
-		}) => {
-			try {
-				await generateVideos({
-					scenesDescriptionFile: options.scenesDescriptionFile,
-					imageDirectory: options.imageDirectory,
-					outputDirectory: options.outputDirectory,
-				});
-			} catch (error) {
-				console.error("❌ Error generating videos:", error);
-				process.exit(1);
-			}
-		},
-	);
+	.action(async (options: { storyboardFile: string }) => {
+		try {
+			await generateVideos({
+				storyboardFile: options.storyboardFile,
+			});
+		} catch (error) {
+			console.error("❌ Error generating videos:", error);
+			process.exit(1);
+		}
+	});
 
 if (import.meta.main) {
 	program.parseAsync(process.argv);

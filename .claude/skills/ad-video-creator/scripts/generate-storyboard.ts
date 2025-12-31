@@ -3,7 +3,7 @@
 /**
  * Generate Storyboard Script
  *
- * Generates storyboards using Fal AI's Nano Banana Pro Edit model.
+ * Generates first and last frames for each scene using Fal AI's Nano Banana Pro Edit model.
  *
  * Usage:
  *   bun run generate-storyboard.ts --scenes-description-file "scenes description file path" --image-directory "images directory path" --output-directory "output directory path"
@@ -49,7 +49,6 @@ async function generateStoryboard(options: StoryboardOptions): Promise<void> {
 	});
 
 	const imageModel = "fal-ai/nano-banana-pro/edit";
-	const videoModel = "fal-ai/veo3.1/fast/first-last-frame-to-video";
 	const referenceImageUrls = await uploadFiles(imageDirectory);
 
 	const mapper = async (scene: (typeof scenesDescription.scenes)[number]) => {
@@ -77,26 +76,12 @@ async function generateStoryboard(options: StoryboardOptions): Promise<void> {
 			requestId: lastFrameQueueStatus.request_id,
 		});
 
-		const videoQueueStatus = await fal.queue.submit(videoModel, {
-			input: {
-				prompt: scene.video_transition_prompt,
-				first_frame_url: firstFrameOutput.data.images[0].url,
-				last_frame_url: lastFrameOutput.data.images[0].url,
-				generate_audio: false,
-				duration: scene.duration,
-			},
-		});
-		await waitUntilCompleted([videoQueueStatus.request_id], videoModel);
-
-		const videoOutput = await fal.queue.result(videoModel, {
-			requestId: videoQueueStatus.request_id,
-		});
-
 		return {
 			sceneTitle: scene.scene_title,
 			firstFrameUrl: firstFrameOutput.data.images[0].url,
 			lastFrameUrl: lastFrameOutput.data.images[0].url,
-			videoUrl: videoOutput.data.video.url,
+			duration: scene.duration,
+			videoTransitionPrompt: scene.video_transition_prompt,
 		};
 	};
 
@@ -105,34 +90,28 @@ async function generateStoryboard(options: StoryboardOptions): Promise<void> {
 	});
 
 	const storyboard = await Promise.all(
-		results.map(async (result) => {
+		results.map(async (result, index) => {
 			const firstFrameUrl = result.firstFrameUrl;
 			const lastFrameUrl = result.lastFrameUrl;
-			const videoUrl = result.videoUrl;
 			const firstFrame = await fetch(firstFrameUrl);
 			const firstFrameBuffer = await firstFrame.arrayBuffer();
 			await Bun.write(
-				`${outputDirectory}/${result.sceneTitle}/first-frame.png`,
+				`${outputDirectory}/${index}-${result.sceneTitle}/first-frame.png`,
 				firstFrameBuffer,
 			);
 			const lastFrame = await fetch(lastFrameUrl);
 			const lastFrameBuffer = await lastFrame.arrayBuffer();
 			await Bun.write(
-				`${outputDirectory}/${result.sceneTitle}/last-frame.png`,
+				`${outputDirectory}/${index}-${result.sceneTitle}/last-frame.png`,
 				lastFrameBuffer,
-			);
-			const video = await fetch(videoUrl);
-			const videoBuffer = await video.arrayBuffer();
-			await Bun.write(
-				`${outputDirectory}/${result.sceneTitle}/video.mp4`,
-				videoBuffer,
 			);
 
 			return {
 				sceneTitle: result.sceneTitle,
-				firstFramePath: `${outputDirectory}/${result.sceneTitle}/first-frame.png`,
-				lastFramePath: `${outputDirectory}/${result.sceneTitle}/last-frame.png`,
-				videoPath: `${outputDirectory}/${result.sceneTitle}/video.mp4`,
+				firstFramePath: `${outputDirectory}/${index}-${result.sceneTitle}/first-frame.png`,
+				lastFramePath: `${outputDirectory}/${index}-${result.sceneTitle}/last-frame.png`,
+				duration: result.duration,
+				videoTransitionPrompt: result.videoTransitionPrompt,
 			};
 		}),
 	);
