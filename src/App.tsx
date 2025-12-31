@@ -17,19 +17,19 @@ function App() {
 		// Dynamically import all media from assets with eager loading
 		const refImages = import.meta.glob(
 			"./assets/reference-images/*.{png,jpg,jpeg}",
-			{ eager: true, as: "url" },
+			{ eager: true, query: "?url" },
 		);
 		const storyboardImages = import.meta.glob(
 			"./assets/storyboard/**/*.{png,jpg,jpeg}",
-			{ eager: true, as: "url" },
+			{ eager: true, query: "?url" },
 		);
 		const storyboardVideos = import.meta.glob(
 			"./assets/storyboard/**/*.{mp4,webm}",
-			{ eager: true, as: "url" },
+			{ eager: true, query: "?url" },
 		);
 		const videos = import.meta.glob("./assets/videos/*.{mp4,webm}", {
 			eager: true,
-			as: "url",
+			query: "?url",
 		});
 
 		// Process reference images
@@ -110,10 +110,15 @@ function App() {
 		});
 
 		// Convert to scene array and sort
-		const sceneArray: Scene[] = Object.entries(sceneMap).map(([name, items]) => ({
-			name: name.replace(/^(Hook|Feature Demo|Feature \d+|Product Introduction|Outro) - /, ""),
-			items,
-		}));
+		const sceneArray: Scene[] = Object.entries(sceneMap).map(
+			([name, items]) => ({
+				name: name.replace(
+					/^(Hook|Feature Demo|Feature \d+|Product Introduction|Outro) - /,
+					"",
+				),
+				items,
+			}),
+		);
 
 		return {
 			referenceImages: refs,
@@ -121,7 +126,9 @@ function App() {
 		};
 	}, []);
 
-	const totalItems = referenceImages.length + scenes.reduce((acc, scene) => acc + scene.items.length, 0);
+	const totalItems =
+		referenceImages.length +
+		scenes.reduce((acc, scene) => acc + scene.items.length, 0);
 
 	if (totalItems === 0) {
 		return (
@@ -218,7 +225,8 @@ function App() {
 					textAlign: "center",
 				}}
 			>
-				Video Project Gallery ({totalItems} {totalItems === 1 ? "item" : "items"})
+				Video Project Gallery ({totalItems}{" "}
+				{totalItems === 1 ? "item" : "items"})
 			</h1>
 
 			{/* Reference Images Section */}
