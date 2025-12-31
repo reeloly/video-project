@@ -12,6 +12,7 @@ allowed-tools: Read, Write, Bash, AskUserQuestion
 
 If user provides an image:
 
+0. Save the image to src/assets/reference-images
 1. Use Read tool to view the product image
 2. Analyze what the product looks like
 3. Identify visual elements for video generation
