@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(ad-video-creator)",
+      "Skill(ad-video-creator:*)",
+      "Bash(bun run:*)"
+    ]
+  }
+}
